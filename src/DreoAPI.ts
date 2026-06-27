@@ -3,7 +3,7 @@ import MD5 from 'crypto-js/md5';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import WebSocket from 'ws';
 import type { DreoPlatform } from './platform';
-import type { Logger } from 'homebridge';
+import type { Logger } from 'homebridge' with { 'resolution-mode': 'import' };
 
 // User agent string for API requests
 const ua = 'dreo/2.8.1 (iPhone; iOS 18.0.0; Scale/3.00)';
@@ -69,7 +69,7 @@ export default class DreoAPI {
         }
       })
       .catch((error) => {
-        this.log.error('error retrieving token:', error);
+        this.logRequestError('error retrieving token', error);
         auth = undefined;
       });
     return auth;
@@ -108,7 +108,7 @@ export default class DreoAPI {
         }
       })
       .catch((error) => {
-        this.log.error('error retrieving Open API token:', error);
+        this.logRequestError('error retrieving Open API token', error);
         auth = undefined;
       });
     return auth;
@@ -134,7 +134,7 @@ export default class DreoAPI {
         devices = response.data.data.list;
       })
       .catch((error) => {
-        this.log.error('error retrieving device list:', error);
+        this.logRequestError('error retrieving device list', error);
         devices = undefined;
       });
     return devices;
@@ -164,7 +164,7 @@ export default class DreoAPI {
         }
       })
       .catch((error) => {
-        this.log.error('error retrieving Open API device list:', error);
+        this.logRequestError('error retrieving Open API device list', error);
         devices = undefined;
       });
     return devices;
@@ -190,7 +190,7 @@ export default class DreoAPI {
         state = response.data.data.mixed;
       })
       .catch((error) => {
-        this.log.error('error retrieving device state:', error);
+        this.logRequestError('error retrieving device state', error);
         state = undefined;
       });
     return state;
@@ -221,7 +221,7 @@ export default class DreoAPI {
         }
       })
       .catch((error) => {
-        this.log.error('error retrieving Open API device state:', error);
+        this.logRequestError('error retrieving Open API device state', error);
         state = undefined;
       });
     return state;
@@ -237,8 +237,8 @@ export default class DreoAPI {
       [],
       {WebSocket: WebSocket});
 
-    this.ws.addEventListener('error', error => {
-      this.log.debug('WebSocket', error);
+    this.ws.addEventListener('error', () => {
+      this.log.debug('WebSocket error');
     });
 
     this.ws.addEventListener('open', () => {
@@ -295,10 +295,25 @@ export default class DreoAPI {
         }
       })
       .catch((error) => {
-        this.log.error('error sending Open API command:', error);
+        this.logRequestError('error sending Open API command', error);
         result = undefined;
       });
     return result;
+  }
+
+  private logRequestError(context: string, error: unknown): void {
+    if (axios.isAxiosError(error)) {
+      const details = [
+        error.response?.status ? `HTTP ${error.response.status}` : undefined,
+        error.code,
+        error.message,
+      ].filter(Boolean).join(', ');
+      this.log.error(`${context}: ${details || 'request failed'}`);
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : 'request failed';
+    this.log.error(`${context}: ${message}`);
   }
 
   private getOpenAPIEndpoint(accessToken: string): string {
