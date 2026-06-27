@@ -7,6 +7,10 @@ import type { Logger } from 'homebridge';
 
 // User agent string for API requests
 const ua = 'dreo/2.8.1 (iPhone; iOS 18.0.0; Scale/3.00)';
+const openApiUa = 'openapi/1.0.0';
+const openApiVersion = '1.0.0';
+const openApiClientId = '89ef537b2202481aaaf9077068bcb0c9';
+const openApiClientSecret = '41b20a1f60e9499e89c8646c31f93ea1';
 
 // Follows same request structure as the mobile app
 export default class DreoAPI {
@@ -14,6 +18,8 @@ export default class DreoAPI {
   private readonly password: string;
   private readonly log: Logger;
   private access_token: string;
+  private open_access_token: string;
+  private open_endpoint: string;
   private ws: WebSocket;
   public server: string;
 
@@ -23,6 +29,8 @@ export default class DreoAPI {
     this.password = platform.config.options?.password;
     this.server = 'us';
     this.access_token = '';
+    this.open_access_token = '';
+    this.open_endpoint = 'https://open-api-us.dreo-tech.com';
   }
 
   // Get authentication token
@@ -67,6 +75,45 @@ export default class DreoAPI {
     return auth;
   }
 
+  // Authenticate against Dreo's Open API. Newer devices such as HAC air
+  // conditioners expose their canonical control directives here.
+  public async authenticateOpenAPI() {
+    let auth;
+    await axios.post('https://open-api-us.dreo-tech.com/api/oauth/login', {
+      'client_id': openApiClientId,
+      'client_secret': openApiClientSecret,
+      'email': this.email,
+      'grant_type': 'openapi',
+      'password': MD5(this.password).toString(),
+      'scope': 'all',
+    }, {
+      params: {
+        'timestamp': Date.now(),
+        'pydreover': openApiVersion,
+      },
+      headers: {
+        'UA': openApiUa,
+        'content-type': 'application/json',
+      },
+    })
+      .then((response) => {
+        const payload = response.data;
+        if (payload.code === 0 && payload.data && payload.data.access_token) {
+          auth = payload.data;
+          this.open_access_token = auth.access_token;
+          this.open_endpoint = this.getOpenAPIEndpoint(auth.access_token);
+        } else {
+          this.log.error('error retrieving Open API token:', payload.msg);
+          auth = undefined;
+        }
+      })
+      .catch((error) => {
+        this.log.error('error retrieving Open API token:', error);
+        auth = undefined;
+      });
+    return auth;
+  }
+
   // Return device list
   public async getDevices() {
     let devices;
@@ -93,6 +140,36 @@ export default class DreoAPI {
     return devices;
   }
 
+  // Return devices and model capabilities from the Dreo Open API.
+  public async getOpenDevices() {
+    let devices;
+    await axios.get(this.open_endpoint + '/api/device/list', {
+      params: {
+        'timestamp': Date.now(),
+        'pydreover': openApiVersion,
+      },
+      headers: {
+        'authorization': 'Bearer ' + this.getCleanOpenAPIToken(),
+        'UA': openApiUa,
+        'content-type': 'application/json',
+      },
+    })
+      .then((response) => {
+        const payload = response.data;
+        if (payload.code === 0) {
+          devices = payload.data;
+        } else {
+          this.log.error('error retrieving Open API device list:', payload.msg);
+          devices = undefined;
+        }
+      })
+      .catch((error) => {
+        this.log.error('error retrieving Open API device list:', error);
+        devices = undefined;
+      });
+    return devices;
+  }
+
   // Used to initialize power state, speed values on boot
   public async getState(sn) {
     let state;
@@ -114,6 +191,37 @@ export default class DreoAPI {
       })
       .catch((error) => {
         this.log.error('error retrieving device state:', error);
+        state = undefined;
+      });
+    return state;
+  }
+
+  // Return device state from the Dreo Open API.
+  public async getOpenState(sn) {
+    let state;
+    await axios.get(this.open_endpoint + '/api/device/state', {
+      params: {
+        'deviceSn': sn,
+        'timestamp': Date.now(),
+        'pydreover': openApiVersion,
+      },
+      headers: {
+        'authorization': 'Bearer ' + this.getCleanOpenAPIToken(),
+        'UA': openApiUa,
+        'content-type': 'application/json',
+      },
+    })
+      .then((response) => {
+        const payload = response.data;
+        if (payload.code === 0) {
+          state = payload.data;
+        } else {
+          this.log.error('error retrieving Open API device state:', payload.msg);
+          state = undefined;
+        }
+      })
+      .catch((error) => {
+        this.log.error('error retrieving Open API device state:', error);
         state = undefined;
       });
     return state;
@@ -158,5 +266,51 @@ export default class DreoAPI {
       'params': command,
       'timestamp': Date.now(),
     }));
+  }
+
+  // Send control commands through the Dreo Open API.
+  public async controlOpen(sn, command) {
+    let result;
+    await axios.post(this.open_endpoint + '/api/device/control', {
+      'devicesn': sn,
+      'desired': command,
+    }, {
+      params: {
+        'timestamp': Date.now(),
+        'pydreover': openApiVersion,
+      },
+      headers: {
+        'authorization': 'Bearer ' + this.getCleanOpenAPIToken(),
+        'UA': openApiUa,
+        'content-type': 'application/json',
+      },
+    })
+      .then((response) => {
+        const payload = response.data;
+        if (payload.code === 0) {
+          result = true;
+        } else {
+          this.log.error('error sending Open API command:', payload.msg);
+          result = undefined;
+        }
+      })
+      .catch((error) => {
+        this.log.error('error sending Open API command:', error);
+        result = undefined;
+      });
+    return result;
+  }
+
+  private getOpenAPIEndpoint(accessToken: string): string {
+    const region = accessToken.includes(':') ? accessToken.split(':')[1].toUpperCase() : 'NA';
+    return region === 'EU'
+      ? 'https://open-api-eu.dreo-tech.com'
+      : 'https://open-api-us.dreo-tech.com';
+  }
+
+  private getCleanOpenAPIToken(): string {
+    return this.open_access_token.includes(':')
+      ? this.open_access_token.split(':')[0]
+      : this.open_access_token;
   }
 }
