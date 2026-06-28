@@ -28,6 +28,7 @@ const SPEEDS = [
 
 function createAccessory(initialState: DreoCommand = {}) {
   const commands: DreoCommand[] = [];
+  let websocketListener: ((message: {data: string}) => void) | undefined;
   const hapAccessory = new Accessory('Portable AC', uuid.generate('test-ac')) as PlatformAccessory;
   hapAccessory.category = Categories.AIR_CONDITIONER;
   hapAccessory.context = {};
@@ -58,16 +59,22 @@ function createAccessory(initialState: DreoCommand = {}) {
       debug: vi.fn(),
     },
     webHelper: {
-      addEventListener: vi.fn(),
+      addEventListener: vi.fn((_event: string, listener: (message: {data: string}) => void) => {
+        websocketListener = listener;
+      }),
       controlOpen: vi.fn(async (_serial: string, command: DreoCommand) => {
         commands.push(command);
         return true;
       }),
+      control: vi.fn((_serial: string, command: DreoCommand) => {
+        commands.push(command);
+      }),
       getOpenState: vi.fn(async () => undefined),
+      getState: vi.fn(async () => undefined),
     },
   } as unknown as DreoPlatform;
 
-  new AirConditionerAccessory(platform, hapAccessory, {
+  const controller = new AirConditionerAccessory(platform, hapAccessory, {
     power_switch: false,
     hvacmode: 'cool',
     mode: 'normal',
@@ -79,7 +86,18 @@ function createAccessory(initialState: DreoCommand = {}) {
     ...initialState,
   });
 
-  return {accessory: hapAccessory, commands};
+  return {
+    accessory: hapAccessory,
+    commands,
+    controller,
+    emitDreoState: (state: DreoCommand) => websocketListener?.({
+      data: JSON.stringify({
+        devicesn: 'test-serial',
+        method: 'report',
+        reported: state,
+      }),
+    }),
+  };
 }
 
 async function setCharacteristic(
@@ -187,8 +205,69 @@ describe('AirConditionerAccessory on the Homebridge v2 HAP runtime', () => {
       {power_switch: true, hvacmode: 'dry', humidity: 55},
       {power_switch: true, hvacmode: 'fan_only', swing_switch: true},
       {led_switch: false},
-      {power_switch: true, hvacmode: 'cool', mode: 'sleep'},
-      {power_switch: true, hvacmode: 'cool', mode: 'eco'},
+      {poweron: true, mode: 4},
+      {poweron: true, mode: 5},
     ]);
+  });
+
+  it('maps numeric Dreo app modes to Sleep and Eco state', () => {
+    const {controller, emitDreoState} = createAccessory();
+
+    emitDreoState({poweron: true, mode: 4});
+    expect(controller.getStateSnapshot()).toMatchObject({
+      on: true,
+      hvacMode: 'cool',
+      mode: 'sleep',
+    });
+
+    emitDreoState({mode: 5});
+    expect(controller.getStateSnapshot()).toMatchObject({
+      on: true,
+      hvacMode: 'cool',
+      mode: 'eco',
+    });
+
+    emitDreoState({mode: 1});
+    expect(controller.getStateSnapshot()).toMatchObject({mode: 'normal'});
+  });
+
+  it('keeps Dreo target and measured temperature separate across reports and commands', async () => {
+    const {
+      accessory,
+      controller,
+      emitDreoState,
+    } = createAccessory({
+      templevel: 70,
+      temperature: 76,
+    });
+
+    expect(controller.getStateSnapshot()).toMatchObject({
+      targetTemperature: 21.1,
+      currentTemperature: 24.4,
+    });
+    expect(
+      accessory
+        .getServiceById(Service.HeaterCooler, 'Cool')!
+        .getCharacteristic(Characteristic.CoolingThresholdTemperature)
+        .value,
+    ).toBe(21);
+    expect(
+      accessory
+        .getServiceById(Service.HeaterCooler, 'Cool')!
+        .getCharacteristic(Characteristic.CurrentTemperature)
+        .value,
+    ).toBeCloseTo(24.4);
+
+    emitDreoState({temperature: 79});
+    expect(controller.getStateSnapshot()).toMatchObject({
+      targetTemperature: 21.1,
+      currentTemperature: 26.1,
+    });
+
+    await controller.controlTargetTemperature(20);
+    expect(controller.getStateSnapshot()).toMatchObject({
+      targetTemperature: 20,
+      currentTemperature: 26.1,
+    });
   });
 });

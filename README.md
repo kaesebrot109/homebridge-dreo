@@ -117,6 +117,38 @@ Air conditioners are exposed as three services on one HomeKit accessory because 
 * **Fan speed switches:** Fan 1, Fan 2, Fan 3, and Fan Auto apply to the currently active mode
 * **Display:** Toggles the hardware display illumination
 
+### Experimental Matter (Homebridge v2)
+
+The DR-HAC006S can also be exposed through Matter while the existing HomeKit
+accessory remains active. Enable both the plugin option and Matter on the Dreo
+child bridge:
+
+```json
+{
+  "enableMatter": true,
+  "_bridge": {
+    "matter": {
+      "enabled": true,
+      "name": "Dreo Matter"
+    }
+  }
+}
+```
+
+The Matter prototype publishes a cooling-only Room Air Conditioner plus
+separately named Dry, Fan Only, FanControl, Fan Auto, humidity, Swing, Display,
+Sleep, and Eco accessories. Apple Home does not currently support Matter's
+generic Mode Select device, so Dry and Fan Only cannot be added to its
+thermostat menu without mislabeling unsupported values. Matter also has no
+standard target-humidity control for this model, so target humidity remains
+available through the parallel HomeKit accessory only. See
+[MATTER_PROTOTYPE.md](MATTER_PROTOTYPE.md) for the current model, iOS findings,
+and test status.
+
+Apple Home renders FanControl as a percentage slider. The plugin maps
+33/66/100 percent to Dreo fan levels 1/2/3 and publishes a separate Fan Auto
+switch.
+
 ## Installation
 
 ```bash

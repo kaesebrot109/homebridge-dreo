@@ -2,8 +2,22 @@ import type { PlatformAccessory, Service } from 'homebridge' with { 'resolution-
 import { DreoPlatform } from '../platform';
 import { BaseAccessory } from './BaseAccessory';
 
-type HvacMode = 'cool' | 'dry' | 'fan_only';
+export type HvacMode = 'cool' | 'dry' | 'fan_only';
 type TemperatureUnit = 'celsius' | 'fahrenheit';
+
+export interface AirConditionerStateSnapshot {
+  on: boolean;
+  hvacMode: HvacMode;
+  mode: string;
+  speed: number;
+  swing: boolean;
+  targetTemperature: number;
+  currentTemperature: number;
+  targetHumidity: number;
+  currentHumidity: number;
+  currentHumidityAvailable: boolean;
+  displayOn: boolean;
+}
 
 const HVAC_MODE = {
   COOL: 'cool' as HvacMode,
@@ -15,6 +29,12 @@ const DREO_MODE = {
   NORMAL: 'normal',
   SLEEP: 'sleep',
   ECO: 'eco',
+};
+
+const DREO_APP_MODE = {
+  NORMAL: 1,
+  SLEEP: 4,
+  ECO: 5,
 };
 
 const HK = {
@@ -39,6 +59,30 @@ const DEFAULT_TARGET_TEMPERATURE_F = 72;
 const DEFAULT_TARGET_HUMIDITY = 50;
 const DEFAULT_CURRENT_HUMIDITY = 50;
 
+const APP_TELEMETRY_KEYS = [
+  'templevel',
+  'temperature',
+  'rhlevel',
+  'rh',
+  'tempunit',
+  'reachtarget',
+  'mode',
+] as const;
+
+/**
+ * The Open API supplies canonical controls but omits the target temperature.
+ * The app API supplies `templevel` (target) and `temperature` (measured).
+ */
+export function mergeAirConditionerState(openState, appState) {
+  const merged = {...(openState || {})};
+  for (const key of APP_TELEMETRY_KEYS) {
+    if (appState?.[key] !== undefined) {
+      merged[key] = appState[key];
+    }
+  }
+  return merged;
+}
+
 /**
  * Dreo HAC / portable air conditioner support.
  *
@@ -57,6 +101,8 @@ export class AirConditionerAccessory extends BaseAccessory {
   private readonly fanSpeed3SwitchService: Service;
   private readonly autoFanSwitchService: Service;
   private readonly pollTimer: NodeJS.Timeout;
+  private readonly stateListeners = new Set<(state: AirConditionerStateSnapshot) => void>();
+  private commandQueue: Promise<void> = Promise.resolve();
 
   private state = {
     on: false,
@@ -68,6 +114,7 @@ export class AirConditionerAccessory extends BaseAccessory {
     currentTemperature: this.toCelsius(DEFAULT_TARGET_TEMPERATURE_F),
     targetHumidity: DEFAULT_TARGET_HUMIDITY,
     currentHumidity: DEFAULT_CURRENT_HUMIDITY,
+    currentHumidityAvailable: false,
     displayOn: true,
     displayKey: 'led_switch',
     temperatureUnit: 'fahrenheit' as TemperatureUnit,
@@ -171,6 +218,76 @@ export class AirConditionerAccessory extends BaseAccessory {
 
   getActive(): boolean {
     return this.isModeActive(HVAC_MODE.COOL);
+  }
+
+  getStateSnapshot(): AirConditionerStateSnapshot {
+    return {
+      on: this.state.on,
+      hvacMode: this.state.hvacMode,
+      mode: this.state.mode,
+      speed: this.state.speed,
+      swing: this.state.swing,
+      targetTemperature: this.state.targetTemperature,
+      currentTemperature: this.state.currentTemperature,
+      targetHumidity: this.state.targetHumidity,
+      currentHumidity: this.state.currentHumidity,
+      currentHumidityAvailable: this.state.currentHumidityAvailable,
+      displayOn: this.state.displayOn,
+    };
+  }
+
+  onStateChange(listener: (state: AirConditionerStateSnapshot) => void): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  getTemperatureLimits(): {min: number; max: number} {
+    return this.getTemperatureRange();
+  }
+
+  async controlCooling(active: boolean): Promise<void> {
+    await this.setCoolActive(active);
+  }
+
+  async controlPower(active: boolean): Promise<void> {
+    await this.sendCommand(active
+      ? {power_switch: true, hvacmode: this.state.hvacMode}
+      : {power_switch: false});
+  }
+
+  async controlDry(active: boolean): Promise<void> {
+    await this.setDryActive(active);
+  }
+
+  async controlFanOnly(active: boolean): Promise<void> {
+    await this.setFanActive(active);
+  }
+
+  async controlTargetTemperature(temperatureCelsius: number): Promise<void> {
+    await this.setCoolingThresholdTemperature(temperatureCelsius);
+  }
+
+  async controlFanSpeed(speed: number): Promise<void> {
+    if (![1, 2, 3, SPEED_AUTO].includes(speed)) {
+      throw new Error(`Unsupported Dreo fan speed: ${speed}`);
+    }
+    await this.setFanSpeedSwitch(true, speed);
+  }
+
+  async controlSwing(active: boolean): Promise<void> {
+    await this.setSwingMode(active, this.state.hvacMode);
+  }
+
+  async controlDisplay(active: boolean): Promise<void> {
+    await this.setDisplayOn(active);
+  }
+
+  async controlSleep(active: boolean): Promise<void> {
+    await this.setSleepMode(active);
+  }
+
+  async controlEco(active: boolean): Promise<void> {
+    await this.setEcoMode(active);
   }
 
   private setServiceName(service: Service, name: string): void {
@@ -430,13 +547,10 @@ export class AirConditionerAccessory extends BaseAccessory {
     if (!enabled && !this.isPresetActive(DREO_MODE.SLEEP)) {
       return;
     }
-    await this.sendCommand(enabled
-      ? {
-        power_switch: true,
-        hvacmode: HVAC_MODE.COOL,
-        mode: DREO_MODE.SLEEP,
-      }
-      : {hvacmode: HVAC_MODE.COOL});
+    await this.sendAppCommand({
+      poweron: true,
+      mode: enabled ? DREO_APP_MODE.SLEEP : DREO_APP_MODE.NORMAL,
+    });
   }
 
   private async setEcoMode(value): Promise<void> {
@@ -444,13 +558,10 @@ export class AirConditionerAccessory extends BaseAccessory {
     if (!enabled && !this.isPresetActive(DREO_MODE.ECO)) {
       return;
     }
-    await this.sendCommand(enabled
-      ? {
-        power_switch: true,
-        hvacmode: HVAC_MODE.COOL,
-        mode: DREO_MODE.ECO,
-      }
-      : {hvacmode: HVAC_MODE.COOL});
+    await this.sendAppCommand({
+      poweron: true,
+      mode: enabled ? DREO_APP_MODE.ECO : DREO_APP_MODE.NORMAL,
+    });
   }
 
   private async setFanSpeedSwitch(value, speed: number): Promise<void> {
@@ -484,7 +595,19 @@ export class AirConditionerAccessory extends BaseAccessory {
     return this.isModeActive(HVAC_MODE.FAN_ONLY) ? HK.CURRENT_FAN_BLOWING_AIR : HK.CURRENT_FAN_INACTIVE;
   }
 
-  private async sendCommand(command): Promise<void> {
+  private sendCommand(command): Promise<void> {
+    const operation = this.commandQueue.then(() => this.executeCommand(command));
+    this.commandQueue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private sendAppCommand(command): Promise<void> {
+    const operation = this.commandQueue.then(() => this.executeAppCommand(command));
+    this.commandQueue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async executeCommand(command): Promise<void> {
     this.platform.log.debug('AC command:', command);
     const commandAccepted = await this.platform.webHelper.controlOpen(this.sn, command);
     if (!commandAccepted) {
@@ -497,27 +620,49 @@ export class AirConditionerAccessory extends BaseAccessory {
     }, 1500);
   }
 
+  private executeAppCommand(command): void {
+    this.platform.log.debug('AC app command:', command);
+    this.platform.webHelper.control(this.sn, command);
+    this.applyCommand(command);
+    this.updateHomeKit();
+    setTimeout(() => {
+      void this.refreshFromCloud();
+    }, 1500);
+  }
+
   private async refreshFromCloud(): Promise<void> {
-    const state = await this.platform.webHelper.getOpenState(this.sn);
-    if (state !== undefined) {
-      this.loadState(state);
+    const [openState, appState] = await Promise.all([
+      this.platform.webHelper.getOpenState(this.sn),
+      this.platform.webHelper.getState(this.sn),
+    ]);
+    if (openState !== undefined || appState !== undefined) {
+      this.loadState(mergeAirConditionerState(openState, appState));
       this.updateHomeKit();
     }
   }
 
-  private loadState(state): void {
+  private loadState(state, source: 'device' | 'command' = 'device'): void {
     if (!state) {
       return;
     }
 
-    const targetTemp = this.readNumber(state, ['temperature', 'target_temperature', 'targetTemperature']);
+    const targetTemp = this.readNumber(
+      state,
+      source === 'command'
+        ? ['temperature', 'templevel', 'target_temperature', 'targetTemperature']
+        : ['templevel', 'target_temperature', 'targetTemperature'],
+    );
     if (targetTemp !== undefined) {
       this.state.temperatureUnit = this.detectTemperatureUnit(targetTemp);
       this.state.targetTemperature = this.toHomeKitTemperature(targetTemp);
-      this.state.currentTemperature = this.state.targetTemperature;
     }
 
-    const currentTemp = this.readNumber(state, ['current_temperature', 'currentTemperature', 'room_temperature', 'roomtemp', 'envtemp']);
+    const currentTemp = this.readNumber(
+      state,
+      source === 'command'
+        ? ['current_temperature', 'currentTemperature', 'room_temperature', 'roomtemp', 'envtemp']
+        : ['current_temperature', 'currentTemperature', 'room_temperature', 'roomtemp', 'envtemp', 'temperature'],
+    );
     if (currentTemp !== undefined) {
       this.state.currentTemperature = this.toHomeKitTemperature(currentTemp);
     }
@@ -537,8 +682,8 @@ export class AirConditionerAccessory extends BaseAccessory {
 
     const mode = this.readString(state, ['mode']);
     if (mode !== undefined) {
-      this.state.mode = mode;
-      if (mode === DREO_MODE.SLEEP || mode === DREO_MODE.ECO) {
+      this.state.mode = this.normalizePresetMode(mode);
+      if (this.state.mode === DREO_MODE.SLEEP || this.state.mode === DREO_MODE.ECO) {
         this.state.hvacMode = HVAC_MODE.COOL;
       }
     }
@@ -562,7 +707,8 @@ export class AirConditionerAccessory extends BaseAccessory {
     const currentHumidity = this.readNumber(state, ['humidity_sensor', 'current_humidity', 'currentHumidity', 'rh']);
     if (currentHumidity !== undefined) {
       this.state.currentHumidity = this.clamp(Math.round(currentHumidity), 0, 100);
-    } else {
+      this.state.currentHumidityAvailable = true;
+    } else if (!this.state.currentHumidityAvailable) {
       this.state.currentHumidity = this.state.targetHumidity;
     }
 
@@ -577,7 +723,7 @@ export class AirConditionerAccessory extends BaseAccessory {
   }
 
   private applyCommand(command): void {
-    this.loadState(command);
+    this.loadState(command, 'command');
   }
 
   private updateHomeKit(): void {
@@ -611,6 +757,11 @@ export class AirConditionerAccessory extends BaseAccessory {
     this.fanSpeed2SwitchService.updateCharacteristic(this.platform.Characteristic.On, this.state.speed === 2);
     this.fanSpeed3SwitchService.updateCharacteristic(this.platform.Characteristic.On, this.state.speed === 3);
     this.autoFanSwitchService.updateCharacteristic(this.platform.Characteristic.On, this.state.speed === SPEED_AUTO);
+
+    const snapshot = this.getStateSnapshot();
+    for (const listener of this.stateListeners) {
+      listener(snapshot);
+    }
   }
 
   private isModeActive(mode: HvacMode): boolean {
@@ -630,6 +781,17 @@ export class AirConditionerAccessory extends BaseAccessory {
       return HVAC_MODE.FAN_ONLY;
     }
     return HVAC_MODE.COOL;
+  }
+
+  private normalizePresetMode(value: string): string {
+    const mode = String(value).toLowerCase();
+    if (mode === String(DREO_APP_MODE.SLEEP) || mode === DREO_MODE.SLEEP) {
+      return DREO_MODE.SLEEP;
+    }
+    if (mode === String(DREO_APP_MODE.ECO) || mode === DREO_MODE.ECO) {
+      return DREO_MODE.ECO;
+    }
+    return DREO_MODE.NORMAL;
   }
 
   private percentageToSpeed(value: number): number {
