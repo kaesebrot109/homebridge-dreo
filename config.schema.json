@@ -49,6 +49,12 @@
         },
         "default": 0,
         "description": "Subtract (or add) a set amount from the temperature reading (use negative numbers to subtract). This setting only applies to fans."
+      },
+      "enableMatter": {
+        "title": "Enable Experimental Matter Integration",
+        "type": "boolean",
+        "default": false,
+        "description": "Expose supported Dreo air conditioners through Matter in parallel with the existing HomeKit integration. Homebridge v2 and a Matter-enabled bridge are required."
       }
     }
   },
@@ -67,6 +73,13 @@
       "items": [
         "hideTemperatureSensor",
         "temperatureOffset"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Experimental Matter",
+      "items": [
+        "enableMatter"
       ]
     }
   ]

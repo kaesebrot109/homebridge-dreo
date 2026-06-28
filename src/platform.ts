@@ -3,6 +3,7 @@ import type {
   Characteristic,
   DynamicPlatformPlugin,
   Logger,
+  MatterAccessory,
   PlatformAccessory,
   PlatformConfig,
   Service,
@@ -13,7 +14,11 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { FanAccessory } from './accessories/FanAccessory';
 import { HeaterAccessory } from './accessories/HeaterAccessory';
 import { HumidifierAccessory } from './accessories/HumidifierAccessory';
-import { AirConditionerAccessory } from './accessories/AirConditionerAccessory';
+import {
+  AirConditionerAccessory,
+  mergeAirConditionerState,
+} from './accessories/AirConditionerAccessory';
+import { AirConditionerMatterAccessory } from './accessories/AirConditionerMatterAccessory';
 import DreoAPI from './DreoAPI';
 
 interface OpenDreoDevice {
@@ -34,6 +39,7 @@ export class DreoPlatform implements DynamicPlatformPlugin {
 
   // This is used to track restored cached accessories
   public readonly accessories: PlatformAccessory[] = [];
+  public readonly matterAccessories: MatterAccessory[] = [];
 
   constructor(
     public readonly log: Logger,
@@ -53,7 +59,11 @@ export class DreoPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', async () => {
       log.debug('Executed didFinishLaunching callback');
       // Run the method to discover / register your devices as accessories
-      this.discoverDevices();
+      try {
+        await this.discoverDevices();
+      } catch (error) {
+        this.log.error('Dreo device discovery failed:', error);
+      }
     });
   }
 
@@ -68,11 +78,38 @@ export class DreoPlatform implements DynamicPlatformPlugin {
     this.accessories.push(accessory);
   }
 
+  configureMatterAccessory(accessory: MatterAccessory): void {
+    this.log.info('Loading Matter accessory from cache:', accessory.displayName);
+    if (!this.matterAccessories.some(candidate => candidate.UUID === accessory.UUID)) {
+      this.matterAccessories.push(accessory);
+    }
+  }
+
   /**
    * Log into Dreo services, retrieve the user's devices, and register them as accessories
    * Also remove accessories that are no longer present on the user's account
    */
   async discoverDevices() {
+    const matterRequested = this.config.enableMatter === true;
+    const matterAvailable = matterRequested && this.api.isMatterEnabled() && this.api.matter !== undefined;
+
+    if (matterRequested && !matterAvailable) {
+      this.log.warn(
+        'enableMatter is set, but Matter is not enabled on this bridge. '
+        + 'Add a matter block to the Dreo _bridge configuration.',
+      );
+    }
+
+    if (!matterRequested && this.api.matter && this.matterAccessories.length > 0) {
+      await this.api.matter.unregisterPlatformAccessories(
+        PLUGIN_NAME,
+        PLATFORM_NAME,
+        this.matterAccessories,
+      );
+      this.matterAccessories.length = 0;
+      this.log.info('Experimental Dreo Matter accessories are disabled');
+    }
+
     // Validate config values
     if (!this.config.options || !this.config.options.email || !this.config.options.password) {
       this.log.error('error: Invalid email and/or password');
@@ -120,6 +157,7 @@ export class DreoPlatform implements DynamicPlatformPlugin {
 
     // Create a set of UUIDs for the currently discovered devices
     const discoveredDeviceUUIDs = new Set(dreoDevices.map(device => this.api.hap.uuid.generate(device.sn)));
+    const discoveredMatterUUIDs = new Set<string>();
 
     // Unregister accessories that are no longer present
     const accessoriesToRemove = this.accessories.filter(accessory => !discoveredDeviceUUIDs.has(accessory.UUID));
@@ -177,9 +215,16 @@ export class DreoPlatform implements DynamicPlatformPlugin {
       const openDevice = openDreoDevices.find(candidate => candidate.deviceSn === device.sn);
 
       // Get initial device state
-      const state = isAirConditioner && openApiAuthenticated
-        ? openDevice?.state || await this.webHelper.getOpenState(device.sn)
-        : await this.webHelper.getState(device.sn);
+      let state;
+      if (isAirConditioner && openApiAuthenticated) {
+        const [openState, appState] = await Promise.all([
+          Promise.resolve(openDevice?.state || this.webHelper.getOpenState(device.sn)),
+          this.webHelper.getState(device.sn),
+        ]);
+        state = mergeAirConditionerState(openState, appState);
+      } else {
+        state = await this.webHelper.getState(device.sn);
+      }
       if (state === undefined) {
         this.log.error('error: Failed to retrieve device state');
         continue;
@@ -235,7 +280,33 @@ export class DreoPlatform implements DynamicPlatformPlugin {
             break;
           }
           accessory.category = this.api.hap.Categories.AIR_CONDITIONER;
-          new AirConditionerAccessory(this, accessory, openDevice?.state || state);
+          {
+            const airConditioner = new AirConditionerAccessory(this, accessory, state);
+            if (matterAvailable) {
+              const matterAccessory = await AirConditionerMatterAccessory.create(
+                this,
+                airConditioner,
+                accessoryDevice,
+              );
+              for (const definition of matterAccessory.definitions) {
+                discoveredMatterUUIDs.add(definition.UUID);
+              }
+              try {
+                await this.api.matter!.registerPlatformAccessories(
+                  PLUGIN_NAME,
+                  PLATFORM_NAME,
+                  matterAccessory.definitions,
+                );
+                matterAccessory.activate();
+                this.log.info(
+                  `Registered ${matterAccessory.definitions.length} experimental Matter accessories:`,
+                  device.deviceName,
+                );
+              } catch (error) {
+                this.log.error('Failed to register experimental Matter accessory:', error);
+              }
+            }
+          }
           break;
 
         case 'DR-HHM':
@@ -253,6 +324,19 @@ export class DreoPlatform implements DynamicPlatformPlugin {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       } else if (existingAccessory && modelPrefix) {
         this.api.updatePlatformAccessories([accessory]);
+      }
+    }
+
+    if (matterAvailable) {
+      const staleMatterAccessories = this.matterAccessories.filter(
+        accessory => !discoveredMatterUUIDs.has(accessory.UUID),
+      );
+      if (staleMatterAccessories.length > 0) {
+        await this.api.matter!.unregisterPlatformAccessories(
+          PLUGIN_NAME,
+          PLATFORM_NAME,
+          staleMatterAccessories,
+        );
       }
     }
   }
