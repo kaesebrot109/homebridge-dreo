@@ -27,10 +27,6 @@ interface OpenDreoDevice {
   state?: Record<string, unknown>;
 }
 
-export function exposesAirConditionerThroughHap(enableMatter: boolean): boolean {
-  return !enableMatter;
-}
-
 /**
  * HomebridgePlatform
  * This class is the main constructor for your plugin, this is where you should
@@ -95,20 +91,21 @@ export class DreoPlatform implements DynamicPlatformPlugin {
    */
   async discoverDevices() {
     const matterRequested = this.config.enableMatter === true;
-    const matterAvailable = matterRequested && this.api.isMatterEnabled() && this.api.matter !== undefined;
+    const matterAvailable = this.isMatterAvailable(matterRequested);
 
     if (matterRequested && !matterAvailable) {
       this.log.warn(
-        'enableMatter is set, but Matter is not enabled on this bridge. '
-        + 'Add a matter block to the Dreo _bridge configuration.',
+        'enableMatter is set, but Matter is unavailable on this bridge. '
+        + 'Falling back to the HomeKit/HAP air-conditioner accessory.',
       );
     }
 
-    if (!matterRequested && this.api.matter && this.matterAccessories.length > 0) {
+    if (!matterAvailable && this.api.matter && this.matterAccessories.length > 0) {
+      const matterAccessoriesToRemove = [...this.matterAccessories];
       await this.api.matter.unregisterPlatformAccessories(
         PLUGIN_NAME,
         PLATFORM_NAME,
-        this.matterAccessories,
+        matterAccessoriesToRemove,
       );
       this.matterAccessories.length = 0;
       this.log.info('Experimental Dreo Matter accessories are disabled');
@@ -175,7 +172,7 @@ export class DreoPlatform implements DynamicPlatformPlugin {
     // Remove a previously cached HAP accessory before creating the internal
     // controller used by Matter, while leaving all other Dreo HAP devices
     // untouched.
-    if (!exposesAirConditionerThroughHap(matterRequested)) {
+    if (matterAvailable) {
       const hapAirConditioners = this.accessories.filter(
         accessory => String(accessory.context.device?.model || '').startsWith('DR-HAC'),
       );
@@ -258,7 +255,7 @@ export class DreoPlatform implements DynamicPlatformPlugin {
       }
       this.log.debug('Accessory state:', state);
       const exposeThroughHap = !device.model.startsWith('DR-HAC')
-        || exposesAirConditionerThroughHap(matterRequested);
+        || !matterAvailable;
 
       // Create the accessory handler for new/restored accessory
       // This is imported from `platformAccessory.ts`
@@ -377,5 +374,12 @@ export class DreoPlatform implements DynamicPlatformPlugin {
         this.accessories.splice(index, 1);
       }
     }
+  }
+
+  private isMatterAvailable(matterRequested: boolean): boolean {
+    return matterRequested
+      && typeof this.api.isMatterEnabled === 'function'
+      && this.api.isMatterEnabled()
+      && this.api.matter !== undefined;
   }
 }

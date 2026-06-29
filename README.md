@@ -136,15 +136,17 @@ also be enabled on the Dreo child bridge:
 }
 ```
 
+If Matter is unavailable—for example on Homebridge v1 or when the child bridge
+has no Matter configuration—the plugin logs a warning and keeps the HomeKit/HAP
+accessory available.
+
 The Matter prototype publishes a cooling-only Room Air Conditioner plus
 separately named Dry, Fan Only, FanControl, Fan Auto, humidity, Swing, Display,
 Sleep, and Eco accessories. Apple Home does not currently support Matter's
 generic Mode Select device, so Dry and Fan Only cannot be added to its
 thermostat menu without mislabeling unsupported values. Matter also has no
 standard target-humidity control for this model, so target humidity remains
-available through the parallel HomeKit accessory only. See
-[MATTER_PROTOTYPE.md](MATTER_PROTOTYPE.md) for the current model, iOS findings,
-and test status.
+available only when using the HomeKit/HAP variant.
 
 Apple Home renders FanControl as a percentage slider. The plugin maps
 33/66/100 percent to Dreo fan levels 1/2/3 and publishes a separate Fan Auto
