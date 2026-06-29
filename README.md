@@ -119,9 +119,10 @@ Air conditioners are exposed as three services on one HomeKit accessory because 
 
 ### Experimental Matter (Homebridge v2)
 
-The DR-HAC006S can also be exposed through Matter while the existing HomeKit
-accessory remains active. Enable both the plugin option and Matter on the Dreo
-child bridge:
+The DR-HAC006S can be exposed either through the regular HomeKit/HAP accessory
+or through Matter. Set `enableMatter` to `true` to publish only the Matter
+variant; leave it disabled to publish only the HomeKit/HAP variant. Matter must
+also be enabled on the Dreo child bridge:
 
 ```json
 {

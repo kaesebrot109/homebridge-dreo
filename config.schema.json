@@ -54,7 +54,7 @@
         "title": "Enable Experimental Matter Integration",
         "type": "boolean",
         "default": false,
-        "description": "Expose supported Dreo air conditioners through Matter in parallel with the existing HomeKit integration. Homebridge v2 and a Matter-enabled bridge are required."
+        "description": "Expose supported Dreo air conditioners through Matter instead of the HomeKit/HAP accessory. Homebridge v2 and a Matter-enabled bridge are required. Disable this option to use the HomeKit/HAP variant."
       }
     }
   },

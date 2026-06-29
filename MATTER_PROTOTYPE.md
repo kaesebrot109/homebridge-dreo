@@ -3,9 +3,10 @@
 Status: 28 June 2026
 
 This prototype exposes the Dreo 516S (DR-HAC006S) through the official
-Homebridge v2 Matter plugin API while retaining the existing HAP accessory.
-Matter is opt-in through `enableMatter: true` and a `matter` block on the same
-Dreo child bridge.
+Homebridge v2 Matter plugin API. Matter is opt-in through `enableMatter: true`
+and a `matter` block on the same Dreo child bridge. The option selects one
+presentation at a time: enabled publishes Matter only, while disabled
+publishes HAP only.
 
 ## Matter model
 
@@ -52,7 +53,8 @@ Homebridge v2 Matter plugin API.
 
 ## Synchronisation and conflict handling
 
-- HAP and Matter call the same `AirConditionerAccessory` controller.
+- The selected HAP or Matter presentation uses the same
+  `AirConditionerAccessory` controller and Dreo state model.
 - Dreo commands are serialized through one promise queue.
 - WebSocket reports and 15-second polling update HAP and Matter from the same
   state snapshot.
@@ -70,7 +72,7 @@ Homebridge v2 Matter plugin API.
 ## Automated verification
 
 - Homebridge 2.1.0 and HAP 2.1.7 build and type-check.
-- Lint, build, and all 48 automated tests pass.
+- Lint, build, and all 50 automated tests pass.
 - Fan speeds 1, 2, 3 and Auto are mapped to Dreo values 1, 2, 3 and 4.
 - Apple Home percentage writes 33, 66, and 100 map to Dreo fan levels 1, 2,
   and 3. A separate `Lüfter Auto` switch selects Dreo value 4.
@@ -94,7 +96,8 @@ Installed prototype:
 - Homebridge 2.1.0, HAP 2.1.7, Matter.js 0.17.1
 - `homebridge-dreo` 4.5.1
 - Dreo child bridge Matter port 5541
-- Existing HAP child bridge and pairing retained
+- Existing HAP child bridge pairing retained; the Dreo air-conditioner HAP
+  accessory is not published while Matter is selected
 
 Real-device checks:
 
@@ -149,4 +152,5 @@ Real-device checks:
 - Confirm the restored individual names in Apple Home, then repeat mode,
   fan-speed, restart, and Dreo reconnection checks from Apple Home.
 
-The existing HAP pairing must remain unchanged until these checks have passed.
+Switching `enableMatter` off unregisters the Matter accessories and restores
+the HAP air-conditioner variant on the already paired child bridge.
